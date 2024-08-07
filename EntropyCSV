@@ -1,0 +1,87 @@
+import math
+import statistics
+from collections import Counter
+import csv
+
+#sequences by date
+seqsE = {}
+seqsW = {}
+
+#entropies of columns
+east_entropies = []
+west_entropies = []
+
+#entropies of columns by date
+seqsED={}
+seqsWD={} 
+
+#mean entropies by date
+meanEED={}         
+meanWED={}  
+with open('East.fa', 'r') as f:
+    for line in f:
+        if line[0] == '>':
+            date = line[-11:-1]
+        elif line[0] == '-':
+            continue
+        else:
+            seq = line[0:len(line)-2]
+        if date not in seqsE:
+            seqsE[date] = []
+        else:
+            seqsE[date].append(seq)
+with open('West.fa', 'r') as f:
+    for line in f:
+        if line[0] == '>':
+            date = line[-11:-1]
+        elif line[0] == '-':
+            continue
+        else:
+            seq = line[0:len(line)-2]
+        if date not in seqsW:
+            seqsW[date] = []
+        else:
+            seqsW[date].append(seq)
+length_of_seqs = len(seqsE['2023-08-01'][0])
+print(seqsE['2023-08-01'][0])
+print(length_of_seqs)
+for day, seqs_listE in seqsE.items():
+    ent_list = [[s[i] for s in seqs_listE] for i in range(length_of_seqs)]
+    for column in ent_list:
+        frequency_counter = Counter(column)
+        frequencies = list(frequency_counter.values())
+        proportions = [x / len(column) for x in frequencies]
+        log_proportions = [math.log(p) for p in proportions]
+        zipped = [a * b for a, b in zip(proportions, log_proportions)]
+        entropy_value = -sum(zipped)
+        east_entropies.append(entropy_value)
+        if day not in seqsED:
+                seqsED[day]=[]
+        else:
+                seqsED[day].append(entropy_value)
+for day,entropies in seqsED.items():
+	meanEED[day]=statistics.mean(seqsED[day])
+for day, seqs_listW in seqsW.items():
+    ent_list = [[s[i] for s in seqs_listW] for i in range(length_of_seqs)]
+    for column in ent_list:
+        frequency_counter = Counter(column)
+        frequencies = list(frequency_counter.values())
+        proportions = [x / len(column) for x in frequencies]
+        log_proportions = [math.log(p) for p in proportions]
+        zipped = [a * b for a, b in zip(proportions, log_proportions)]
+        entropy_value = -sum(zipped)
+        if day not in seqsWD:
+                seqsWD[day]=[]
+        else:
+                seqsWD[day].append(entropy_value)
+for day,entropies in seqsED.items():
+        meanWED[day]=statistics.mean(seqsWD[day])
+print(meanWED)
+with open('Entropy.csv', 'w') as csvfile:
+    fieldnames = ['East Dates','East Entropies','West Dates', 'West Entropies']
+    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+    writer.writeheader()
+    for e,ee,w,ww in zip(meanEED.keys(),meanEED.values(),meanWED.keys(), meanWED.values()):
+        writer.writerow({'East Dates': e,'East Entropies':ee,'West Dates':w, 'West Entropies':ww })
+
+
