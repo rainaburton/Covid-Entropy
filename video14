@@ -1,0 +1,193 @@
+import os
+import numpy as np
+import pandas as pd
+import geopandas as gpd
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+from collections import defaultdict, Counter
+import imageio.v2 as imageio
+import math
+import statistics
+from Bio import SeqIO
+
+def parse_fasta(file_path):
+    """
+    Parse a FASTA file and return a dictionary of sequences by state and month.
+    """
+    sequences_by_state_month = defaultdict(lambda: defaultdict(list))
+
+    with open(file_path, 'r') as file:
+        for record in SeqIO.parse(file, 'fasta'):
+            header_parts = record.description.split('|')
+            if len(header_parts) < 3:
+                print(f"Skipping due to format error: {record.description}")
+                continue
+
+            # Extract state abbreviation directly from the first two characters
+            state_abbr = header_parts[0][:2].strip().upper()  # Extract state abbreviation
+            date = header_parts[-1].strip()  # Extract date
+
+            # Handle different date formats
+            date_parts = date.split('-')
+            if len(date_parts) == 3:
+                year, month, _ = date_parts
+            elif len(date_parts) == 2:
+                year, month = date_parts
+                print(f"Using default day for date: {date}")
+            elif len(date_parts) == 1:
+                year = date_parts[0]
+                month = '01'
+                print(f"Using default month and day for date: {date}")
+            else:
+                print(f"Skipping due to invalid date format: {record.description}")
+                continue
+
+            sequences_by_state_month[state_abbr][f"{year}-{month}"].append(str(record.seq))
+
+    return sequences_by_state_month
+
+def calculate_monthly_entropy(sequences_by_state_month):
+    """
+    Calculate the average Shannon entropy for each month for each state.
+    """
+    monthly_entropies = defaultdict(dict)
+    all_entropies = []  # Track all entropy values for scaling
+
+    for state, months in sequences_by_state_month.items():
+        for month, sequences in months.items():
+            if not sequences:
+                continue
+
+            length_of_seqs = len(sequences[0])
+            ent_list = [[s[i] for s in sequences] for i in range(length_of_seqs)]
+            entropies = []
+
+            for column in ent_list:
+                frequency_counter = Counter(column)
+                frequencies = list(frequency_counter.values())
+                proportions = [x / len(column) for x in frequencies]
+                log_proportions = [math.log(p, 10) for p in proportions]
+                zipped = [a * b for a, b in zip(proportions, log_proportions)]
+                entropy_value = -sum(zipped)
+                entropies.append(entropy_value)
+
+            monthly_entropy = statistics.mean(entropies)
+            monthly_entropies[state][month] = monthly_entropy
+            all_entropies.append(monthly_entropy)
+
+            # Debug: Print entropy values
+            print(f"State: {state}, Month: {month}, Entropy: {monthly_entropy}")
+
+    # Use the actual maximum entropy value for scaling
+    max_entropy_value = max(all_entropies)
+    print(f"Max entropy value: {max_entropy_value}")  # Debug: Print max entropy
+    
+    return monthly_entropies, max_entropy_value
+
+def create_custom_colormap():
+    """
+    Create a custom colormap that transitions from blue to green, yellow, orange, and red.
+    """
+    colors = [(0.0, "blue"),   # Least entropy
+              (0.25, "green"), # Low entropy
+              (0.5, "yellow"), # Moderate entropy
+              (0.75, "orange"),# High entropy
+              (1.0, "red")]    # Most entropy
+    positions = [c[0] for c in colors]
+    colors = [c[1] for c in colors]
+    return LinearSegmentedColormap.from_list("custom_cmap", list(zip(positions, colors)))
+
+def create_entropy_video(monthly_entropies, shapefile_path, output_video_path, max_entropy_value, frames_dir):
+    """
+    Create a video showing the entropy by state over time using a shapefile.
+    Save each frame as an image in the specified directory.
+    """
+    try:
+        us_states = gpd.read_file(shapefile_path)
+    except Exception as e:
+        print(f"Failed to load shapefile: {e}")
+        return
+
+    # Ensure the state abbreviation is the same case as in the data
+    us_states['STUSPS'] = us_states['STUSPS'].str.upper()
+
+    images = []
+    all_dates = sorted({date for state in monthly_entropies for date in monthly_entropies[state]})
+
+    # Adjust figure size to be divisible by 16
+    fig_width = 14
+    fig_height = 8
+
+    # Create the custom colormap
+    custom_cmap = create_custom_colormap()
+
+    # Ensure the frames directory exists
+    os.makedirs(frames_dir, exist_ok=True)
+
+    for date in all_dates:
+        fig, ax = plt.subplots(1, 1, figsize=(fig_width, fig_height))  # Use dimensions that result in divisible sizes
+        entropy_data = []
+
+        for state in state_abbreviations:
+            if state in monthly_entropies and date in monthly_entropies[state]:
+                entropy_data.append((state, monthly_entropies[state][date]))
+            else:
+                entropy_data.append((state, 0))  # Assign zero entropy if missing
+
+        entropy_df = pd.DataFrame(entropy_data, columns=['STUSPS', 'entropy'])
+
+        # Merge with GeoDataFrame
+        merged = us_states.set_index('STUSPS').join(entropy_df.set_index('STUSPS'))
+        merged.plot(
+            column='entropy', 
+            cmap=custom_cmap,  # Use custom colormap
+            linewidth=0.8, 
+            ax=ax, 
+            edgecolor='0.8', 
+            legend=True,
+            vmin=0,  # Set minimum value of the color scale
+            vmax=max_entropy_value  # Use actual max for a full range scale
+        )
+        
+        # Place the title above the map
+        ax.set_title(f"Average Monthly Shannon Entropy by State - {date}", fontsize=12, loc='center', pad=15)
+        ax.set_axis_off()
+
+        # Adjust layout to better center the map
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Leave space for the title at the top
+
+        # Save the frame as an image
+        frame_path = os.path.join(frames_dir, f"frame_{date}.png")
+        plt.savefig(frame_path, bbox_inches='tight', pad_inches=0.1, dpi=1000)  # Increase DPI for higher quality
+        images.append(imageio.imread(frame_path))
+        plt.close(fig)
+
+    # Save the images as a video
+    imageio.mimsave(output_video_path, images, fps=1)
+
+# List of all US state abbreviations
+state_abbreviations = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", 
+    "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", 
+    "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", 
+    "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"
+]
+
+# Paths to files
+fasta_file_path = '50states'  # Update with the correct path to your FASTA file
+shapefile_path = 'cb_2018_us_state_500k/cb_2018_us_state_500k.shp'  # Ensure this path is correct
+output_video_path = 'entropy_by_state_over_time14.mp4'
+frames_directory = 'entropy_frames'  # Directory to save frames
+
+# Parse the FASTA file
+sequences_by_state_month = parse_fasta(fasta_file_path)
+
+# Calculate monthly entropies
+monthly_entropies, max_entropy_value = calculate_monthly_entropy(sequences_by_state_month)
+
+# Create the video showing entropy changes by state over time and save frames
+create_entropy_video(monthly_entropies, shapefile_path, output_video_path, max_entropy_value, frames_directory)
+
+print(f"Entropy video saved as {output_video_path}")
+print(f"Frames saved in directory: {frames_directory}")
+
